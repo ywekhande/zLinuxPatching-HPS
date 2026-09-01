@@ -1,0 +1,18 @@
+---
+# Group variables for RHEL 9 servers
+
+# Kernel configuration
+kernel_version: "5.14.0-687.5.1.el9_8.s390x"
+kernel_package: "kernel-5.14.0-687.5.1.el9_8"
+
+# DNF configuration
+dnf_cache_path: /var/cache/dnf
+enable_system_update: true
+
+# Reboot configuration
+reboot_timeout: 300
+post_reboot_delay: 30
+
+# GPFS check configuration
+check_gpfs: true
+gpfs_package: "gpfs.base"

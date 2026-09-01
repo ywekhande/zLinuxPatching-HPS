@@ -1,0 +1,17 @@
+# Ansible Inventory for RHEL 9 Linux Patching
+# Define hosts and groups for kernel patching operations
+
+[rhel9_servers]
+# Add your RHEL 9 servers here
+# example: server1.example.com
+# example: server2.example.com
+
+[rhel9_servers:vars]
+# Common variables for all RHEL 9 servers
+ansible_user=root
+ansible_port=22
+kernel_version="5.14.0-687.5.1.el9_8.s390x"
+
+[all:vars]
+# Global variables
+ansible_connection=ssh
