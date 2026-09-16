@@ -1,0 +1,226 @@
+---
+- name: Patch RHEL9 servers with kernel 5.14.0-687.44.1.el9_8.s390x
+  hosts: all
+  become: yes
+
+  vars:
+    kernel_version: "5.14.0-687.44.1.el9_8.s390x"
+    kernel_package: "kernel-5.14.0-687.42.1.el9_8"
+
+  tasks:
+
+    # ============================================
+    # Pre-check: Skip if GPFS installed
+    # ============================================
+    - name: Check if gpfs.base is installed
+      ansible.builtin.command:
+        cmd: rpm -q gpfs.base
+      register: gpfs_installed
+      changed_when: false
+      failed_when: false
+
+    - name: Display GPFS status
+      ansible.builtin.debug:
+        msg: >
+          GPFS detected: {{ gpfs_installed.rc == 0 }},
+          Version: {{ gpfs_installed.stdout | default('not installed') }}
+
+    - name: Patch RHEL9 servers (skip if GPFS installed)
+      block:
+
+        # ============================================
+        # Pre-patching: Clean DNF cache
+        # ============================================
+        - name: Clean DNF cache (before patching)
+          ansible.builtin.command: dnf clean all
+          register: pre_dnf_clean_result
+          changed_when: pre_dnf_clean_result.rc == 0
+
+        - name: Remove files under /var/cache/dnf (before patching)
+          ansible.builtin.find:
+            paths: /var/cache/dnf
+            file_type: any
+          register: pre_dnf_cache_files
+
+        - name: Delete DNF cache files (before patching)
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ pre_dnf_cache_files.files }}"
+          when: pre_dnf_cache_files.matched > 0
+
+        # ============================================
+        # Ensure versionlock plugin and clear locks
+        # ============================================
+        - name: Ensure DNF versionlock plugin is installed
+          ansible.builtin.package:
+            name: python3-dnf-plugin-versionlock
+            state: present
+
+        - name: Clear existing version locks
+          ansible.builtin.command:
+            cmd: dnf versionlock clear
+          changed_when: true
+
+        # ============================================
+        # Manage kernel exclusions
+        # ============================================
+        - name: Ensure kernel exclusions are present in /etc/yum.conf
+          ansible.builtin.lineinfile:
+            path: /etc/yum.conf
+            regexp: '^#?exclude=.*kernel'
+            line: 'exclude=kernel*,kmod*'
+            insertafter: '^\[main\]'
+            state: present
+            backup: yes
+            create: no
+
+        - name: Ensure kernel exclusions are present in /etc/dnf/dnf.conf
+          ansible.builtin.lineinfile:
+            path: /etc/dnf/dnf.conf
+            regexp: '^#?exclude=.*kernel'
+            line: 'exclude=kernel*,kmod*'
+            insertafter: '^\[main\]'
+            state: present
+            backup: yes
+            create: no
+
+        # ============================================
+        # Temporarily disable exclusions
+        # ============================================
+        - name: Temporarily comment out exclude line in /etc/yum.conf
+          ansible.builtin.replace:
+            path: /etc/yum.conf
+            regexp: '^exclude='
+            replace: '#exclude='
+          register: yum_exclude_commented
+
+        - name: Temporarily comment out exclude line in /etc/dnf/dnf.conf
+          ansible.builtin.replace:
+            path: /etc/dnf/dnf.conf
+            regexp: '^exclude='
+            replace: '#exclude='
+          register: dnf_exclude_commented
+          ignore_errors: yes
+
+        # ============================================
+        # Kernel update
+        # ============================================
+        - name: Update to kernel {{ kernel_version }}
+          ansible.builtin.dnf:
+            name: "{{ kernel_package }}"
+            state: present
+            disable_excludes: all
+          register: kernel_update_result
+
+        - name: Verify kernel package installation
+          ansible.builtin.command:
+            cmd: "rpm -q {{ kernel_package }}"
+          register: kernel_installed
+          changed_when: false
+          failed_when: kernel_installed.rc != 0
+
+        # ============================================
+        # Re-enable exclusions
+        # ============================================
+        - name: Re-enable exclude line in /etc/yum.conf
+          ansible.builtin.replace:
+            path: /etc/yum.conf
+            regexp: '^#exclude='
+            replace: 'exclude='
+          when: yum_exclude_commented is changed
+
+        - name: Re-enable exclude line in /etc/dnf/dnf.conf
+          ansible.builtin.replace:
+            path: /etc/dnf/dnf.conf
+            regexp: '^#exclude='
+            replace: 'exclude='
+          when: dnf_exclude_commented is changed
+          ignore_errors: yes
+
+        # ============================================
+        # Update firmware and system
+        # ============================================
+        - name: Check if linux-firmware is installed
+          ansible.builtin.command:
+            cmd: rpm -q linux-firmware
+          register: linux_firmware_check
+          changed_when: false
+          failed_when: false
+
+        - name: Update linux-firmware package if installed
+          ansible.builtin.dnf:
+            name: linux-firmware
+            state: latest
+          when: linux_firmware_check.rc == 0
+
+        - name: Perform full system update excluding kernel/kmod
+          ansible.builtin.dnf:
+            name: "*"
+            state: latest
+            exclude: "kernel*,kmod*"
+
+        # ============================================
+        # Safe zipl for IBM Z before reboot (only if kernel updated)
+        # ============================================
+        - name: Check /boot/loader/entries exists
+          ansible.builtin.stat:
+            path: /boot/loader/entries
+          register: bls_dir
+
+        - name: Run zipl to rebuild bootmap
+          ansible.builtin.command: zipl
+          when:
+            - kernel_update_result.changed
+            - bls_dir.stat.exists
+          register: zipl_result
+
+        - name: Show zipl output
+          ansible.builtin.debug:
+            msg: "{{ zipl_result.stdout }}"
+          when:
+            - kernel_update_result.changed
+            - bls_dir.stat.exists
+
+        # ============================================
+        # Reboot if needed
+        # ============================================
+        - name: Get current running kernel version
+          ansible.builtin.command:
+            cmd: uname -r
+          register: current_kernel
+          changed_when: false
+
+        - name: Display current vs target kernel
+          ansible.builtin.debug:
+            msg:
+              - "Current kernel: {{ current_kernel.stdout }}"
+              - "Target kernel: {{ kernel_version }}"
+              - "Reboot required: {{ current_kernel.stdout != kernel_version }}"
+
+        - name: Reboot server if kernel was updated
+          ansible.builtin.reboot:
+            msg: "Reboot initiated by Ansible for kernel update"
+            connect_timeout: 5
+            reboot_timeout: 300
+            pre_reboot_delay: 0
+            post_reboot_delay: 30
+            test_command: uptime
+          when: current_kernel.stdout != kernel_version
+
+        # ============================================
+        # Verify new kernel after reboot
+        # ============================================
+        - name: Verify new kernel is running after reboot
+          ansible.builtin.command:
+            cmd: uname -r
+          register: new_kernel
+          changed_when: false
+          failed_when: new_kernel.stdout != kernel_version
+          when: current_kernel.stdout != kernel_version
+
+        - name: Display final kernel version
+          ansible.builtin.debug:
+            msg: "System is now running kernel: {{ new_kernel.stdout | default(current_kernel.stdout) }}"
+
+      when: gpfs_installed.rc != 0
