@@ -1,11 +1,11 @@
 ---
-- name: Patch RHEL9 servers with kernel 5.14.0-687.5.1.el9_8.s390x
+- name: Patch RHEL9 servers with kernel 5.14.0-687.44.1.el9_8.s390x
   hosts: all
   become: yes
 
   vars:
-    kernel_version: "5.14.0-687.5.1.el9_8.s390x"
-    kernel_package: "kernel-5.14.0-687.5.1.el9_8"
+    kernel_version: "5.14.0-687.44.1.el9_8.s390x"
+    kernel_package: "kernel-5.14.0-687.44.1.el9_8"
 
   tasks:
 
